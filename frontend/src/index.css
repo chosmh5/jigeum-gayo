@@ -1,0 +1,18 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'Pretendard', -apple-system, sans-serif;
+  background: #f5f5f5;
+  color: #111;
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.badge-여유 { background: #d4f7dc; color: #1a7c3e; }
+.badge-보통 { background: #fff3cd; color: #856404; }
+.badge-혼잡 { background: #fde8e8; color: #c0392b; }

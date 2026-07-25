@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>지금 가볼까?</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, sans-serif; background: #f7f8fa; }
+    header { background: #fff; padding: 20px 24px; border-bottom: 1px solid #eee; }
+    header h1 { font-size: 22px; font-weight: 800; }
+    header p { font-size: 13px; color: #888; margin-top: 4px; }
+    main { max-width: 720px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+    #map { width: 100%; height: 400px; border-radius: 12px; overflow: hidden; }
+    #status { text-align: center; color: #888; font-size: 14px; padding: 16px 0; }
+
+    /* 타입 토글 */
+    .type-toggles { display: flex; gap: 8px; }
+    .type-btn {
+      padding: 8px 20px; border-radius: 20px; border: 2px solid #ddd;
+      background: #fff; font-size: 14px; font-weight: 600; cursor: pointer; color: #888;
+    }
+    .type-btn.active { border-color: #3498db; background: #3498db; color: #fff; }
+
+    /* 지역 아코디언 */
+    .group { border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+    .group-header {
+      background: #fff; padding: 14px 20px;
+      display: flex; justify-content: space-between; align-items: center;
+      cursor: pointer; user-select: none;
+    }
+    .group-header:hover { background: #f0f4ff; }
+    .group-title { font-weight: 700; font-size: 15px; }
+    .group-count { font-size: 13px; color: #888; }
+    .group-arrow { font-size: 12px; color: #aaa; transition: transform .2s; }
+    .group-arrow.open { transform: rotate(180deg); }
+    .group-body { display: none; border-top: 1px solid #f0f0f0; }
+    .group-body.open { display: block; }
+
+    .card {
+      background: #fff; padding: 14px 20px;
+      display: flex; justify-content: space-between; align-items: center;
+      border-top: 1px solid #f5f5f5;
+    }
+    .card:first-child { border-top: none; }
+    .card-name { font-weight: 600; font-size: 14px; }
+    .card-meta { font-size: 12px; color: #aaa; margin-top: 3px; }
+    .badge {
+      font-size: 12px; font-weight: 700; padding: 3px 10px;
+      border-radius: 20px; color: #fff; white-space: nowrap;
+    }
+    .여유 { background: #2ecc71; }
+    .보통 { background: #f39c12; }
+    .혼잡 { background: #e74c3c; }
+
+    .type-section { display: flex; flex-direction: column; gap: 8px; }
+    .type-section.hidden { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>지금 가볼까? 🗺️</h1>
+    <p>공공시설 실시간 혼잡도 · 시간대별 예측</p>
+  </header>
+  <main>
+    <div id="map"></div>
+    <div id="status">불러오는 중…</div>
+    <div class="type-toggles">
+      <button class="type-btn active" data-type="library">📚 열람실</button>
+      <button class="type-btn" data-type="locker">🔒 물품 보관함</button>
+    </div>
+    <div id="section-library" class="type-section"></div>
+    <div id="section-locker" class="type-section hidden"></div>
+  </main>
+
+  <script src="/config.js"></script>
+  <script>
+    const API = 'http://localhost:8000'
+    const COLOR = { 여유: '#2ecc71', 보통: '#f39c12', 혼잡: '#e74c3c' }
+
+    let map, allFacilities = [], activeMarkers = [], openInfoRef = null
+    const libGeoCache = {}
+    let lockerRendered = false
+
+    function setStatus(msg, isError) {
+      const el = document.getElementById('status')
+      el.style.display = ''
+      el.textContent = msg
+      el.style.color = isError ? '#e74c3c' : '#888'
+    }
+
+    if (!window.KAKAO_JS_KEY || window.KAKAO_JS_KEY === 'YOUR_KAKAO_JS_KEY') {
+      setStatus('Kakao 앱키가 없습니다 — frontend/config.example.js 를 config.js 로 복사한 뒤 키를 넣으세요.', true)
+    } else {
+      const s = document.createElement('script')
+      s.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${window.KAKAO_JS_KEY}&autoload=false`
+      s.onerror = () => setStatus('카카오 SDK 로드 실패 — 개발자 콘솔에서 http://localhost:8000 도메인을 등록했는지 확인하세요.', true)
+      s.onload = () => kakao.maps.load(initMap)
+      document.head.appendChild(s)
+    }
+
+    async function initMap() {
+      setStatus('지도 로딩 완료, 시설 정보 불러오는 중…', false)
+
+      map = new kakao.maps.Map(document.getElementById('map'), {
+        center: new kakao.maps.LatLng(37.5665, 126.9780),
+        level: 5,
+      })
+
+      try {
+        const res = await fetch(`${API}/facilities`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        allFacilities = await res.json()
+        document.getElementById('status').style.display = 'none'
+      } catch (e) {
+        setStatus(`서버 연결 실패 (${e.message}) — uvicorn backend.main:app 실행 확인`, true)
+        return
+      }
+
+      // 도서관 목록 렌더 (기본 탭)
+      renderByGroup(allFacilities.filter(f => f.type === 'library'),
+        'section-library', f => f.name.split(' ')[0])
+
+      // 도서관 마커 표시
+      await addLibraryMarkers()
+
+      // 토글 (라디오)
+      document.querySelectorAll('.type-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTo(btn.dataset.type))
+      })
+    }
+
+    async function switchTo(type) {
+      document.querySelectorAll('.type-btn').forEach(b =>
+        b.classList.toggle('active', b.dataset.type === type))
+      document.querySelectorAll('.type-section').forEach(s =>
+        s.classList.toggle('hidden', s.id !== 'section-' + type))
+
+      clearMarkers()
+
+      if (type === 'library') {
+        await addLibraryMarkers()
+      } else {
+        if (!lockerRendered) {
+          setStatus('물품 보관함 지역 정보 불러오는 중… (잠시 기다려 주세요)')
+          await renderLockersByRegion(allFacilities.filter(f => f.type === 'locker'))
+          lockerRendered = true
+          document.getElementById('status').style.display = 'none'
+        }
+        addLockerMarkers()
+      }
+    }
+
+    // ── 마커 관리 ──────────────────────────────────────
+    function clearMarkers() {
+      if (openInfoRef) { openInfoRef.close(); openInfoRef = null }
+      activeMarkers.forEach(({ marker, info }) => { marker.setMap(null); info.close() })
+      activeMarkers = []
+    }
+
+    function placeMarker(name, label, available, lat, lon) {
+      const pos = new kakao.maps.LatLng(lat, lon)
+      const color = COLOR[label] ?? '#aaa'
+      const marker = new kakao.maps.Marker({ position: pos, map })
+      const info = new kakao.maps.InfoWindow({
+        content: `<div style="padding:10px 14px;min-width:140px;font-family:sans-serif;font-size:13px">
+          <div style="font-weight:700;margin-bottom:4px">${name}</div>
+          <span style="color:${color};font-weight:600">${label}</span>
+          <span style="color:#666;font-size:12px"> · 잔여 ${available}석</span>
+        </div>`,
+        removable: true,
+      })
+      kakao.maps.event.addListener(marker, 'click', () => {
+        if (openInfoRef) openInfoRef.close()
+        openInfoRef = (openInfoRef === info) ? (info.close(), null) : (info.open(map, marker), info)
+      })
+      activeMarkers.push({ marker, info })
+    }
+
+    function fitMap() {
+      if (!activeMarkers.length) return
+      if (activeMarkers.length === 1) {
+        map.setCenter(activeMarkers[0].marker.getPosition()); return
+      }
+      const bounds = new kakao.maps.LatLngBounds()
+      activeMarkers.forEach(({ marker }) => bounds.extend(marker.getPosition()))
+      map.setBounds(bounds)
+    }
+
+    // ── 도서관 마커 (키워드 지오코딩) ──────────────────
+    async function addLibraryMarkers() {
+      const libs = allFacilities.filter(f => f.type === 'library')
+      const buildings = [...new Set(libs.map(f => f.name.split(' ')[0]))]
+
+      await Promise.all(buildings.map(async name => {
+        if (libGeoCache[name] !== undefined) return
+        try {
+          const res = await fetch(`${API}/api/keyword?q=${encodeURIComponent(name)}`)
+          const data = await res.json()
+          libGeoCache[name] = data.documents?.length
+            ? { lat: parseFloat(data.documents[0].y), lon: parseFloat(data.documents[0].x) }
+            : null
+        } catch { libGeoCache[name] = null }
+      }))
+
+      buildings.forEach(building => {
+        const coords = libGeoCache[building]
+        if (!coords) return
+        const rooms = libs.filter(f => f.name.startsWith(building))
+        const label = rooms.some(r => r.congestion_label === '혼잡') ? '혼잡'
+                    : rooms.some(r => r.congestion_label === '보통') ? '보통' : '여유'
+        const available = rooms.reduce((s, r) => s + r.current_available, 0)
+        placeMarker(building, label, available, coords.lat, coords.lon)
+      })
+
+      fitMap()
+    }
+
+    // ── 락커 마커 ───────────────────────────────────────
+    function addLockerMarkers() {
+      allFacilities.filter(f => f.type === 'locker' && f.lat && f.lon).forEach(f => {
+        placeMarker(f.name, f.congestion_label, f.current_available, f.lat, f.lon)
+      })
+      fitMap()
+    }
+
+    // ── 목록 렌더 ───────────────────────────────────────
+    async function renderLockersByRegion(lockers) {
+      const coordKeys = [...new Set(
+        lockers.filter(f => f.lat && f.lon).map(f => `${f.lat},${f.lon}`)
+      )]
+      const regionMap = {}
+      await Promise.all(coordKeys.map(async key => {
+        const [lat, lon] = key.split(',')
+        try {
+          const res = await fetch(`${API}/api/region?lat=${lat}&lon=${lon}`)
+          const data = await res.json()
+          const doc = data.documents?.find(d => d.region_type === 'H')
+          regionMap[key] = doc ? doc.region_2depth_name : '기타'
+        } catch { regionMap[key] = '기타' }
+      }))
+
+      const grouped = lockers.reduce((acc, f) => {
+        const region = (f.lat && f.lon) ? (regionMap[`${f.lat},${f.lon}`] ?? '기타') : '기타'
+        ;(acc[region] ??= []).push(f)
+        return acc
+      }, {})
+
+      const section = document.getElementById('section-locker')
+      Object.entries(grouped).sort(([a],[b]) => a.localeCompare(b))
+        .forEach(([region, list]) => renderGroup(section, region, list))
+    }
+
+    function renderByGroup(items, sectionId, groupFn) {
+      const groups = items.reduce((acc, f) => {
+        ;(acc[groupFn(f)] ??= []).push(f)
+        return acc
+      }, {})
+      const section = document.getElementById(sectionId)
+      Object.entries(groups).forEach(([name, list]) => renderGroup(section, name, list))
+    }
+
+    function renderGroup(section, groupName, list) {
+      const wrap = document.createElement('div')
+      wrap.className = 'group'
+      const header = document.createElement('div')
+      header.className = 'group-header'
+      header.innerHTML = `
+        <span class="group-title">${groupName}</span>
+        <span><span class="group-count">${list.length}개</span> <span class="group-arrow">▼</span></span>
+      `
+      const body = document.createElement('div')
+      body.className = 'group-body'
+      list.forEach(f => {
+        const card = document.createElement('div')
+        card.className = 'card'
+        card.innerHTML = `
+          <div>
+            <div class="card-name">${f.name}</div>
+            <div class="card-meta">잔여 ${f.current_available} / ${f.total_capacity}석 · ${f.updated_at}</div>
+          </div>
+          <span class="badge ${f.congestion_label}">${f.congestion_label}</span>
+        `
+        body.appendChild(card)
+      })
+      header.addEventListener('click', () => {
+        body.classList.toggle('open')
+        header.querySelector('.group-arrow').classList.toggle('open')
+      })
+      wrap.appendChild(header)
+      wrap.appendChild(body)
+      section.appendChild(wrap)
+    }
+  </script>
+</body>
+</html>

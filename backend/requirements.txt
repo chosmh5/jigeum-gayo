@@ -1,0 +1,9 @@
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+scikit-learn==1.4.0
+pandas==2.1.4
+python-dotenv==1.0.0
+requests==2.31.0
+# 학습된 모델(XGBoost + SMOTE 파이프라인) 역직렬화에 필요
+xgboost==2.0.3
+imbalanced-learn==0.12.0
